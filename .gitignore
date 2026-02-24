@@ -1,0 +1,25 @@
+# Simulation output
+*.vtu
+*.vti
+*.vtr
+*.vtp
+log.lammps
+
+# Media (except examples/)
+*.avi
+*.mp4
+!examples/*.png
+
+# Temp files
+concat.txt
+frames.txt
+population_data.txt
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Python
+__pycache__/
+*.pyc
