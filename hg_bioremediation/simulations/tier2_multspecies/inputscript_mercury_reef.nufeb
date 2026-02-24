@@ -1,0 +1,243 @@
+#-----------------------------------------------------------------------------#
+#   "The Mercury Reef" -- NUFEB Tier 2 Showcase Simulation                   #
+#                                                                             #
+#   Multi-colony biofilm with EPS scaffolding, 365-day run                   #
+#   400x400x800um tall domain, 4 asymmetric seed clusters                    #
+#                                                                             #
+#   7 atom types:                                                             #
+#     1. HET  - heterotrophs (EPS producers, aerobic)                        #
+#     2. AOB  - ammonium-oxidizing bacteria                                  #
+#     3. NOB  - nitrite-oxidizing bacteria                                   #
+#     4. ANA  - anammox (Hg-inhibited)                                       #
+#     5. CECT - P. pseudoalcaligenes CECT5344 (SCN degrader, Hg sink)       #
+#     6. EPS  - extracellular polymeric substance (structural matrix)        #
+#     7. DEAD - dead/lysed cells                                              #
+#                                                                             #
+#   Seed strategy (asymmetric for competitive morphology):                   #
+#     Cluster A (SW): HET-dominated + AOB + CECT                            #
+#     Cluster B (SE): ANA-dominated + HET + CECT (mercury rescue zone)      #
+#     Cluster C (NW): CECT-dominated + HET + NOB (remediation hub)          #
+#     Cluster D (NE): nitrifier mix + HET (nitrogen cycle node)             #
+#                                                                             #
+#   Color palette (earth tones, prey/protector contrast):                    #
+#     HET  = tan             (dominant biofilm matrix)                       #
+#     AOB  = darkolivegreen  (nitrifier, supporting)                         #
+#     NOB  = sienna          (nitrifier, supporting)                         #
+#     ANA  = gold            (Hg-"prey", key species to protect)            #
+#     CECT = teal            (Hg-"protector", remediation agent)            #
+#     EPS  = wheat           (structural scaffolding, light/translucent)    #
+#     DEAD = darkgray        (necrotic core material)                        #
+#-----------------------------------------------------------------------------#
+
+
+#-----------------------------System Settings---------------------------------#
+
+units si
+atom_style      coccus
+atom_modify     map array sort 10 0
+
+boundary        pp pp ff
+newton          off
+processors      * * 1
+
+comm_modify     vel yes
+
+
+#-----------------------------Domain Setup------------------------------------#
+
+# 400um x 400um x 800um tall domain
+region simu_domain block 0.0 4e-4 0.0 4e-4 0.0 8e-4 units box
+create_box 7 simu_domain
+
+
+#--------------------Microbes and Functional Groups---------------------------#
+
+lattice sc 1e-5 origin 0 0 0
+
+# 4 asymmetric seed clusters (~40um patches)
+region seed_A block  8 12  8 12 0 1    # SW corner
+region seed_B block 28 32  8 12 0 1    # SE corner
+region seed_C block  8 12 28 32 0 1    # NW corner
+region seed_D block 28 32 28 32 0 1    # NE corner
+
+# Cluster A (SW): HET-dominated + AOB + CECT
+create_atoms 1 random 15 11111 seed_A    # HET
+create_atoms 2 random 8  11112 seed_A    # AOB
+create_atoms 5 random 5  11113 seed_A    # CECT
+
+# Cluster B (SE): ANA-focused + HET + CECT (mercury rescue zone)
+create_atoms 1 random 8  22221 seed_B    # HET
+create_atoms 4 random 12 22222 seed_B    # ANA
+create_atoms 5 random 8  22223 seed_B    # CECT
+
+# Cluster C (NW): CECT-dominated + HET + NOB (remediation hub)
+create_atoms 1 random 8  33331 seed_C    # HET
+create_atoms 3 random 6  33332 seed_C    # NOB
+create_atoms 5 random 15 33333 seed_C    # CECT
+
+# Cluster D (NE): nitrifier mix + HET (nitrogen cycle node)
+create_atoms 1 random 10 44441 seed_D    # HET
+create_atoms 2 random 8  44442 seed_D    # AOB
+create_atoms 3 random 8  44443 seed_D    # NOB
+
+# all species start at 4um diameter, 32 kg/m3 density
+set type 1 diameter 4e-6
+set type 1 density 32
+set type 2 diameter 4e-6
+set type 2 density 32
+set type 3 diameter 4e-6
+set type 3 density 32
+set type 4 diameter 4e-6
+set type 4 density 32
+set type 5 diameter 4e-6
+set type 5 density 32
+set type 6 diameter 4e-6
+set type 6 density 32
+set type 7 diameter 4e-6
+set type 7 density 32
+
+group           HET   type 1
+group           AOB   type 2
+group           NOB   type 3
+group           ANA   type 4
+group           CECT  type 5
+group           EPS   type 6
+group           DEAD  type 7
+
+neighbor        2e-6 bin
+neigh_modify    check yes
+
+
+#--------------------------Mesh Grid and Substrates---------------------------#
+
+grid_style      nufeb/chemostat 8 sub nh4 o2 no2 no3 n2 hg scn 1.25e-5
+
+grid_modify     set sub  pp pp nd  1.2e-3       # organic carbon
+grid_modify     set nh4  pp pp nd  1e-3         # ammonium
+grid_modify     set o2   pp pp nd  0.5e-3       # dissolved oxygen
+grid_modify     set no2  pp pp nd  1e-8         # nitrite (trace)
+grid_modify     set no3  pp pp nd  1e-8         # nitrate (trace)
+grid_modify     set n2   pp pp nd  1e-8         # dinitrogen (trace)
+grid_modify     set hg   pp pp nd  5e-5         # Hg2+ -- 50 ug/L
+grid_modify     set scn  pp pp nd  1.5e-3       # SCN- -- 1.5 mg/L
+
+
+#--------------------------Biological Processes--------------------------------#
+
+# HET growth: aerobic heterotrophy WITH EPS production
+fix growth_het HET nufeb/growth/het sub 4e-3 o2 2e-4 no2 0.5e-3 no3 0.5e-3 &
+growth 6.9444e-5 yield 0.63 maintain 4.63e-6 decay 9.17e-7 anoxic 0.8 &
+epsyield 0.18 epsdens 30
+
+# AOB growth: NH4+ -> NO2-
+fix growth_aob AOB nufeb/growth/aob nh4 2.4e-3 o2 0.6e-3 no2 &
+growth 2.3727e-5 yield 0.15 maintain 1.505e-6 decay 7.87e-7
+
+# NOB growth: NO2- -> NO3-
+fix growth_nob NOB nufeb/growth/nob o2 2.2e-3 no2 5.5e-3 no3 &
+growth 1.6782e-5 yield 0.041 maintain 0.694e-6 decay 4.63e-7
+
+# ANA growth: NH4+ + NO2- -> N2 (Hg2+ inhibited)
+fix growth_ana ANA nufeb/growth/anammox_hg nh4 7e-5 o2 1e-5 no2 5e-5 no3 n2 hg 1e-5 &
+growth 9.26e-7 yield 0.159 maintain 3.5e-8 decay 3e-8
+
+# CECT5344 growth: SCN- degrader + Hg2+ accumulator
+fix growth_cect CECT nufeb/growth/cect5344 scn 5e-3 o2 2e-4 nh4 hg 1e-2 &
+growth 2.5e-5 yield 0.5 maintain 3e-6 decay 5e-7 &
+hg_uptake 2e-3 nh4_yield 0.293
+
+# EPS decay (dissolves back to organic substrate)
+fix growth_eps EPS nufeb/growth/eps sub decay 2e-6
+
+# EPS secretion: HET secrete EPS particles when shell grows thick
+fix eps_ext HET nufeb/eps_secretion 6 EPS 1.3 30 7890
+
+# cell division (with EPS shell splitting)
+fix div_het  HET  nufeb/division/coccus 5e-6 1234 epsdens 30
+fix div_aob  AOB  nufeb/division/coccus 5e-6 2345
+fix div_nob  NOB  nufeb/division/coccus 5e-6 3456
+fix div_ana  ANA  nufeb/division/coccus 5e-6 4567
+fix div_cect CECT nufeb/division/coccus 5e-6 5678
+
+# cell death below 2um diameter
+fix death all nufeb/death/diameter DEAD 2e-6 type 7
+
+
+#---------------------------Physical Processes---------------------------------#
+
+pair_style  gran/hooke/history 1e-2 NULL 1e-3 NULL 0.0 0
+pair_coeff  * *
+
+fix nve all nve/limit 1e-7
+fix wall all wall/gran hooke/history 0.5 NULL 0.5 NULL 0 0 zplane 0.0 8e-04
+fix vis all viscous 1e-6
+
+# EPS adhesion: attractive force between particles via EPS matrix
+fix adh all nufeb/adhesion/eps EPS 5e2
+
+# EPS wall adhesion: biofilm sticks to substratum
+fix walladh all nufeb/wall_adhesion EPS 1e3 zplane 0.0 NULL
+
+
+#---------------------------Post-Physical Processes----------------------------#
+
+fix blayer all nufeb/boundary_layer 2.5e-4 1 xhi
+
+fix coeff_sub all nufeb/diffusion_coeff sub ratio 0.75
+fix coeff_o2  all nufeb/diffusion_coeff o2  ratio 0.75
+fix coeff_nh4 all nufeb/diffusion_coeff nh4 ratio 0.75
+fix coeff_no2 all nufeb/diffusion_coeff no2 ratio 0.75
+fix coeff_no3 all nufeb/diffusion_coeff no3 ratio 0.75
+fix coeff_hg  all nufeb/diffusion_coeff hg  ratio 0.50
+fix coeff_scn all nufeb/diffusion_coeff scn ratio 0.60
+
+
+#---------------------------Chemical Processes----------------------------------#
+
+fix diff_sub all nufeb/diffusion_reaction sub 1.16e-9
+fix diff_nh4 all nufeb/diffusion_reaction nh4 1.97e-9
+fix diff_o2  all nufeb/diffusion_reaction o2  2.30e-9
+fix diff_no2 all nufeb/diffusion_reaction no2 1.85e-9
+fix diff_no3 all nufeb/diffusion_reaction no3 1.85e-9
+fix diff_n2  all nufeb/diffusion_reaction n2  2.30e-9
+fix diff_hg  all nufeb/diffusion_reaction hg  9.10e-10
+fix diff_scn all nufeb/diffusion_reaction scn 1.85e-9
+
+
+#--------------------------Computations and Outputs----------------------------#
+
+variable mass equal "mass(all)"
+variable nhet equal "count(HET)"
+variable naob equal "count(AOB)"
+variable nnob equal "count(NOB)"
+variable nana equal "count(ANA)"
+variable ncect equal "count(CECT)"
+variable neps equal "count(EPS)"
+variable ndead equal "count(DEAD)"
+
+# Lightweight preview images (no SSAO -- VTK for publication)
+shell mkdir png
+dump du_img all image 40 png/reef_*.png type diameter &
+size 1280 720 view 75 50 center s 0.5 0.5 0.2 up 0 0 1 zoom 2.0 &
+shiny 0.5 box yes 0.003
+dump_modify du_img backcolor white boxcolor darkslategray &
+acolor 1 tan acolor 2 darkolivegreen acolor 3 sienna &
+acolor 4 gold acolor 5 teal acolor 6 wheat acolor 7 darkgray
+
+# VTK output for ParaView / Blender publication rendering
+shell mkdir vtk
+dump du_vtk all vtk 80 vtk/dump*.vtu id type diameter
+dump du_grid all grid/vtk 80 vtk/dump_%_*.vti con rea den gro
+
+thermo_style custom step cpu atoms v_mass v_nhet v_naob v_nnob v_nana v_ncect v_neps v_ndead
+thermo 1
+thermo_modify lost warn
+
+
+#---------------------------------Run------------------------------------------#
+
+run_style nufeb diffdt 1e-4 difftol 1e-6 pairdt 1e-2 pairtol 1 pairmax 200 diffmax 1000
+
+timestep 3600                               # 1 hour biological timestep
+
+run 8760                                    # 365 days

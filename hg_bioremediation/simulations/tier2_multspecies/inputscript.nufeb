@@ -1,0 +1,195 @@
+#-----------------------------------------------------------------------------#
+#   NUFEB Simulation: Anammox Biofilm + CECT5344 Bioremediation (Tier 2)    #
+#                                                                             #
+#   5 living species + dead:                                                  #
+#     1. HET  - heterotrophs (aerobic carbon oxidizers)                      #
+#     2. AOB  - ammonium-oxidizing bacteria (NH4 -> NO2)                     #
+#     3. NOB  - nitrite-oxidizing bacteria (NO2 -> NO3)                      #
+#     4. ANA  - anammox (NH4 + NO2 -> N2, Hg-inhibited)                     #
+#     5. CECT - P. pseudoalcaligenes CECT5344 (SCN degrader + Hg sink)      #
+#     6. DEAD - dead/lysed cells                                              #
+#                                                                             #
+#   Reaction network:                                                         #
+#     Hg(SCN)2 -> Hg2+ + 2SCN-           (abiotic dissociation)              #
+#     SCN- + 2H2O -> NH3 + CO2 + HS-     (CECT5344 cyanotrophic)            #
+#     Hg2+(aq) -> Hg2+(intracellular)     (CECT5344 bioaccumulation)         #
+#     NH4+ + NO2- -> N2                   (anammox, Hg-inhibited)            #
+#     NH4+ + 1.5O2 -> NO2-               (AOB)                               #
+#     NO2- + 0.5O2 -> NO3-               (NOB)                               #
+#     organic C + O2 -> CO2               (HET)                               #
+#-----------------------------------------------------------------------------#
+
+
+#-----------------------------System Settings---------------------------------#
+
+units si
+atom_style      coccus
+atom_modify     map array sort 10 0
+
+boundary        pp pp ff
+newton          off
+processors      * * 1
+
+comm_modify     vel yes
+
+
+#-----------------------------Domain Setup------------------------------------#
+
+# 300um x 300um x 300um domain
+region simu_domain block 0.0 3e-4 0.0 3e-4 0.0 3e-4 units box
+create_box 6 simu_domain
+
+
+#--------------------Microbes and Functional Groups---------------------------#
+
+lattice sc 1e-5 origin 0 0 0
+region seed_region block 0 30 0 30 0 1
+
+# seed bacteria on bottom surface
+create_atoms 1 random 150 1234 seed_region     # HET
+create_atoms 2 random 150 2345 seed_region     # AOB
+create_atoms 3 random 150 3456 seed_region     # NOB
+create_atoms 4 random 150 4567 seed_region     # ANA
+create_atoms 5 random 150 5678 seed_region     # CECT5344
+
+# all species start at 4um diameter, 32 kg/m3 density
+set type 1 diameter 4e-6
+set type 1 density 32
+set type 2 diameter 4e-6
+set type 2 density 32
+set type 3 diameter 4e-6
+set type 3 density 32
+set type 4 diameter 4e-6
+set type 4 density 32
+set type 5 diameter 4e-6
+set type 5 density 32
+set type 6 diameter 4e-6
+set type 6 density 32
+
+group           HET   type 1
+group           AOB   type 2
+group           NOB   type 3
+group           ANA   type 4
+group           CECT  type 5
+group           DEAD  type 6
+
+neighbor        2e-6 bin
+neigh_modify    check yes
+
+
+#--------------------------Mesh Grid and Substrates---------------------------#
+
+# 8 substrates: nitrogen cycle (6) + mercury (1) + thiocyanate (1)
+grid_style      nufeb/chemostat 8 sub nh4 o2 no2 no3 n2 hg scn 1.25e-5
+
+# Boundary conditions and initial concentrations (kg/m3)
+# Dirichlet at top (nd), no-flux at bottom
+grid_modify     set sub  pp pp nd  1.2e-3       # organic carbon
+grid_modify     set nh4  pp pp nd  1e-3         # ammonium (lower -- CECT will produce more)
+grid_modify     set o2   pp pp nd  0.5e-3       # dissolved oxygen
+grid_modify     set no2  pp pp nd  1e-8         # nitrite (trace)
+grid_modify     set no3  pp pp nd  1e-8         # nitrate (trace)
+grid_modify     set n2   pp pp nd  1e-8         # dinitrogen (trace)
+grid_modify     set hg   pp pp nd  1e-4         # Hg2+ -- 100 ug/L high exposure
+grid_modify     set scn  pp pp nd  5e-4         # SCN- -- 500 ug/L (from Hg(SCN)2 dissociation)
+
+
+#--------------------------Biological Processes--------------------------------#
+
+# HET growth: aerobic heterotrophy
+fix growth_het HET nufeb/growth/het sub 4e-3 o2 2e-4 no2 0.5e-3 no3 0.5e-3 &
+growth 6.9444e-5 yield 0.63 maintain 4.63e-6 decay 9.17e-7 anoxic 0.8
+
+# AOB growth: NH4+ -> NO2-
+fix growth_aob AOB nufeb/growth/aob nh4 2.4e-3 o2 0.6e-3 no2 &
+growth 2.3727e-5 yield 0.15 maintain 1.505e-6 decay 7.87e-7
+
+# NOB growth: NO2- -> NO3-
+fix growth_nob NOB nufeb/growth/nob o2 2.2e-3 no2 5.5e-3 no3 &
+growth 1.6782e-5 yield 0.041 maintain 0.694e-6 decay 4.63e-7
+
+# ANA growth: NH4+ + NO2- -> N2 (Hg2+ inhibited, K_I = 10 ug/L)
+fix growth_ana ANA nufeb/growth/anammox_hg nh4 7e-5 o2 1e-5 no2 5e-5 no3 n2 hg 1e-5 &
+growth 9.26e-7 yield 0.159 maintain 3.5e-8 decay 3e-8
+
+# CECT5344 growth: SCN- degrader + Hg2+ accumulator
+#   K_SCN = 5e-3 kg/m3 (5 mg/L)
+#   K_O2  = 2e-4 kg/m3 (0.2 mg/L)
+#   K_I   = 1e-2 kg/m3 (10 mg/L) -- 1000x more Hg-tolerant than anammox
+#   mu_max = 5.5e-5 s-1 (~3.5 hour doubling time)
+#   yield  = 0.5 kg biomass / kg SCN-
+#   hg_uptake = 5e-4 m3/(kg*s) -- intracellular mercury accumulation rate
+#   nh4_yield = 0.293 -- stoichiometric NH3/SCN mass ratio (17/58)
+fix growth_cect CECT nufeb/growth/cect5344 scn 5e-3 o2 2e-4 nh4 hg 1e-2 &
+growth 5.5e-5 yield 0.5 maintain 3e-6 decay 5e-7 &
+hg_uptake 5e-4 nh4_yield 0.293
+
+# cell division at 5um diameter
+fix div all nufeb/division/coccus 5e-6 1234
+
+# cell death below 2um diameter
+fix death all nufeb/death/diameter DEAD 2e-6 type 6
+
+
+#---------------------------Physical Processes---------------------------------#
+
+pair_style  gran/hooke/history 1e-2 NULL 1e-3 NULL 0.0 0
+pair_coeff  * *
+
+fix nve all nve/limit 1e-7
+fix wall all wall/gran hooke/history 0.5 NULL 0.5 NULL 0 0 zplane 0.0 3e-04
+fix vis all viscous 1e-6
+
+
+#---------------------------Post-Physical Processes----------------------------#
+
+fix blayer all nufeb/boundary_layer 0.9e-4 1 xhi
+
+fix coeff_sub all nufeb/diffusion_coeff sub ratio 0.75
+fix coeff_o2  all nufeb/diffusion_coeff o2  ratio 0.75
+fix coeff_nh4 all nufeb/diffusion_coeff nh4 ratio 0.75
+fix coeff_no2 all nufeb/diffusion_coeff no2 ratio 0.75
+fix coeff_no3 all nufeb/diffusion_coeff no3 ratio 0.75
+fix coeff_hg  all nufeb/diffusion_coeff hg  ratio 0.50
+fix coeff_scn all nufeb/diffusion_coeff scn ratio 0.60
+
+
+#---------------------------Chemical Processes----------------------------------#
+
+fix diff_sub all nufeb/diffusion_reaction sub 1.16e-9
+fix diff_nh4 all nufeb/diffusion_reaction nh4 1.97e-9
+fix diff_o2  all nufeb/diffusion_reaction o2  2.30e-9
+fix diff_no2 all nufeb/diffusion_reaction no2 1.85e-9
+fix diff_no3 all nufeb/diffusion_reaction no3 1.85e-9
+fix diff_n2  all nufeb/diffusion_reaction n2  2.30e-9
+fix diff_hg  all nufeb/diffusion_reaction hg  9.10e-10
+fix diff_scn all nufeb/diffusion_reaction scn 1.85e-9
+
+
+#--------------------------Computations and Outputs----------------------------#
+
+variable mass equal "mass(all)"
+variable nhet equal "count(HET)"
+variable naob equal "count(AOB)"
+variable nnob equal "count(NOB)"
+variable nana equal "count(ANA)"
+variable ncect equal "count(CECT)"
+variable ndead equal "count(DEAD)"
+
+# movie: HET=green AOB=red NOB=blue ANA=yellow CECT=purple DEAD=white
+dump du_movie all movie 10 movie.avi type diameter view 80 60
+dump_modify du_movie acolor 1 green acolor 2 red acolor 3 blue &
+acolor 4 yellow acolor 5 purple acolor 6 white framerate 10
+
+thermo_style custom step cpu atoms v_mass v_nhet v_naob v_nnob v_nana v_ncect v_ndead
+thermo 1
+thermo_modify lost warn
+
+
+#---------------------------------Run------------------------------------------#
+
+run_style nufeb diffdt 1e-4 difftol 1e-6 pairdt 1e-2 pairtol 1 pairmax 200 diffmax 1000
+
+timestep 3600                               # 1 hour biological timestep
+
+run 720                                     # 30 days

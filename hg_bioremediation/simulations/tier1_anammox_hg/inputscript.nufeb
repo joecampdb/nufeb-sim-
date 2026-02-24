@@ -1,0 +1,173 @@
+#-----------------------------------------------------------------------------#
+#   NUFEB Simulation: Anammox Biofilm + Hg(SCN)2 Bioremediation (Tier 1)    #
+#                                                                             #
+#   Tier 1 scope: existing anammox biofilm with Hg2+ and SCN- as passive     #
+#   diffusible substrates. No biodegradation of SCN-, no Hg2+ inhibition     #
+#   on growth yet (that requires a custom fix -- see src/ directory).         #
+#                                                                             #
+#   This script validates the substrate transport framework before we         #
+#   add biological coupling in the custom fix_growth_anammox_hg.             #
+#-----------------------------------------------------------------------------#
+
+
+#-----------------------------System Settings---------------------------------#
+
+units si                                    # SI units (m, s, kg)
+atom_style      coccus                      # NUFEB coccus atom style
+atom_modify     map array sort 10 0
+
+boundary        pp pp ff                    # periodic in x,y; fixed in z
+newton          off
+processors      * * 1
+
+comm_modify     vel yes
+
+
+#-----------------------------Domain Setup------------------------------------#
+
+# 300um x 300um x 300um domain
+region simu_domain block 0.0 3e-4 0.0 3e-4 0.0 3e-4 units box
+create_box 5 simu_domain
+
+
+#--------------------Microbes and Functional Groups---------------------------#
+
+# seed bacteria on bottom surface (z = 0 to 1 grid cell height)
+lattice sc 1e-5 origin 0 0 0
+region seed_region block 0 30 0 30 0 1
+
+create_atoms 1 random 200 1234 seed_region     # HET  - heterotrophs
+create_atoms 2 random 200 2345 seed_region     # AOB  - ammonium oxidizers
+create_atoms 3 random 200 3456 seed_region     # NOB  - nitrite oxidizers
+create_atoms 4 random 200 4567 seed_region     # ANA  - anammox
+
+set type 1 diameter 4e-6
+set type 1 density 32
+set type 2 diameter 4e-6
+set type 2 density 32
+set type 3 diameter 4e-6
+set type 3 density 32
+set type 4 diameter 4e-6
+set type 4 density 32
+set type 5 diameter 4e-6
+set type 5 density 32
+
+group           HET   type 1
+group           AOB   type 2
+group           NOB   type 3
+group           ANA   type 4
+group           DEAD  type 5
+
+neighbor        2e-6 bin
+neigh_modify    check yes
+
+
+#--------------------------Mesh Grid and Substrates---------------------------#
+
+# 8 substrates: 6 standard nitrogen cycle + hg (Hg2+) + scn (SCN-)
+grid_style      nufeb/chemostat 8 sub nh4 o2 no2 no3 n2 hg scn 1.25e-5
+
+# Boundary conditions: pp pp nd = periodic x, periodic y, dirichlet top / no-flux bottom
+# Initial/boundary concentrations in kg/m3
+grid_modify     set sub  pp pp nd  1.2e-3       # organic carbon
+grid_modify     set nh4  pp pp nd  6e-3         # ammonium
+grid_modify     set o2   pp pp nd  0.5e-3       # dissolved oxygen
+grid_modify     set no2  pp pp nd  1e-8         # nitrite (trace)
+grid_modify     set no3  pp pp nd  1e-8         # nitrate (trace)
+grid_modify     set n2   pp pp nd  1e-8         # dinitrogen (trace)
+grid_modify     set hg   pp pp nd  1e-4         # Hg2+ -- 100 ug/L high exposure (10x K_I)
+grid_modify     set scn  pp pp nd  5e-5         # SCN- -- 50 ug/L from dissociation
+
+
+#--------------------------Biological Processes--------------------------------#
+
+# HET growth: aerobic heterotrophy with anoxic denitrification
+fix growth_het HET nufeb/growth/het sub 4e-3 o2 2e-4 no2 0.5e-3 no3 0.5e-3 &
+growth 6.9444e-5 yield 0.63 maintain 4.63e-6 decay 9.17e-7 anoxic 0.8
+
+# AOB growth: aerobic ammonium oxidation (NH4+ -> NO2-)
+fix growth_aob AOB nufeb/growth/aob nh4 2.4e-3 o2 0.6e-3 no2 &
+growth 2.3727e-5 yield 0.15 maintain 1.505e-6 decay 7.87e-7
+
+# NOB growth: aerobic nitrite oxidation (NO2- -> NO3-)
+fix growth_nob NOB nufeb/growth/nob o2 2.2e-3 no2 5.5e-3 no3 &
+growth 1.6782e-5 yield 0.041 maintain 0.694e-6 decay 4.63e-7
+
+# ANA growth: anaerobic ammonium oxidation (NH4+ + NO2- -> N2)
+# Uses custom fix with Hg2+ non-competitive inhibition:
+#   mu = mu_max * M(NH4) * M(NO2) * I(O2) * K_I/(K_I + [Hg2+])
+#   K_I = 1e-5 kg/m3 (~10 ug/L) -- half-inhibition concentration
+fix growth_ana ANA nufeb/growth/anammox_hg nh4 7e-5 o2 1e-5 no2 5e-5 no3 n2 hg 1e-5 &
+growth 9.26e-7 yield 0.159 maintain 3.5e-8 decay 3e-8
+
+# cell division at 5um diameter
+fix div all nufeb/division/coccus 5e-6 1234
+
+# cell death below 2um diameter
+fix death all nufeb/death/diameter DEAD 2e-6 type 5
+
+
+#---------------------------Physical Processes---------------------------------#
+
+pair_style  gran/hooke/history 1e-2 NULL 1e-3 NULL 0.0 0
+pair_coeff  * *
+
+fix nve all nve/limit 1e-7
+fix wall all wall/gran hooke/history 0.5 NULL 0.5 NULL 0 0 zplane 0.0 3e-04
+fix vis all viscous 1e-6
+
+
+#---------------------------Post-Physical Processes----------------------------#
+
+fix blayer all nufeb/boundary_layer 0.9e-4 1 xhi
+
+# diffusion coefficients in biofilm relative to liquid
+fix coeff_sub all nufeb/diffusion_coeff sub ratio 0.75
+fix coeff_o2  all nufeb/diffusion_coeff o2  ratio 0.75
+fix coeff_nh4 all nufeb/diffusion_coeff nh4 ratio 0.75
+fix coeff_no2 all nufeb/diffusion_coeff no2 ratio 0.75
+fix coeff_no3 all nufeb/diffusion_coeff no3 ratio 0.75
+fix coeff_hg  all nufeb/diffusion_coeff hg  ratio 0.50    # Hg2+ slower in EPS matrix
+fix coeff_scn all nufeb/diffusion_coeff scn ratio 0.60    # SCN- moderate retardation
+
+
+#---------------------------Chemical Processes----------------------------------#
+
+# diffusion-reaction for each substrate (diffusivity in m2/s)
+fix diff_sub all nufeb/diffusion_reaction sub 1.16e-9
+fix diff_nh4 all nufeb/diffusion_reaction nh4 1.97e-9
+fix diff_o2  all nufeb/diffusion_reaction o2  2.30e-9
+fix diff_no2 all nufeb/diffusion_reaction no2 1.85e-9
+fix diff_no3 all nufeb/diffusion_reaction no3 1.85e-9
+fix diff_n2  all nufeb/diffusion_reaction n2  2.30e-9
+fix diff_hg  all nufeb/diffusion_reaction hg  9.10e-10    # Hg2+ diffusivity
+fix diff_scn all nufeb/diffusion_reaction scn 1.85e-9     # SCN- diffusivity
+
+
+#--------------------------Computations and Outputs----------------------------#
+
+variable mass equal "mass(all)"
+variable nhet equal "count(HET)"
+variable naob equal "count(AOB)"
+variable nnob equal "count(NOB)"
+variable nana equal "count(ANA)"
+variable ndead equal "count(DEAD)"
+
+# movie output
+dump du_movie all movie 10 movie.avi type diameter view 80 60
+dump_modify du_movie acolor 1 green acolor 2 red acolor 3 blue acolor 4 yellow acolor 5 white framerate 10
+
+# thermo output to screen and log
+thermo_style custom step cpu atoms v_mass v_nhet v_naob v_nnob v_nana v_ndead
+thermo 1
+thermo_modify lost warn
+
+
+#---------------------------------Run------------------------------------------#
+
+# NUFEB run style with biological/chemical/physical timestep splitting
+run_style nufeb diffdt 1e-4 difftol 1e-6 pairdt 1e-2 pairtol 1 pairmax 200 diffmax 1000
+
+timestep 3600                               # biological timestep: 1 hour (3600s)
+
+run 720                                     # 720 hours = 30 days of biofilm growth

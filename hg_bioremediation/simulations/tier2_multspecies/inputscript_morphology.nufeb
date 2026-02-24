@@ -1,0 +1,203 @@
+#-----------------------------------------------------------------------------#
+#   NUFEB Simulation: Anammox Biofilm + CECT5344 Bioremediation (Tier 2)    #
+#   MORPHOLOGY RUN -- sparse seeding, tall domain, 90-day                    #
+#                                                                             #
+#   Goal: develop realistic finger/mushroom biofilm architecture             #
+#                                                                             #
+#   Changes from tuned baseline:                                              #
+#     1. Domain 200x200x600um (tall narrow box for vertical growth)          #
+#     2. Sparse seeding: 25 cells each in 60um central patch                 #
+#     3. Run time 2160 steps (90 days)                                       #
+#     4. Earth-tone palette, prey/protector contrast                         #
+#     5. Lightweight preview renders (VTK for publication quality)           #
+#                                                                             #
+#   Color rationale:                                                          #
+#     HET  = tan         (dominant background biofilm, neutral earth tone)   #
+#     AOB  = darkolivegreen (nitrifier, muted supporting role)               #
+#     NOB  = sienna      (nitrifier, warm brown, supporting role)            #
+#     ANA  = gold        (Hg-INHIBITED -- warm/bright, "prey" of Hg2+)      #
+#     CECT = teal        (Hg-ACCUMULATOR -- cool/distinct, "protector")     #
+#     DEAD = darkgray    (inert lysed biomass)                               #
+#                                                                             #
+#     Key contrast: gold ANA vs teal CECT -- the rescue narrative            #
+#     Hg2+ suppresses ANA (gold dims); CECT (teal) draws down Hg2+          #
+#-----------------------------------------------------------------------------#
+
+
+#-----------------------------System Settings---------------------------------#
+
+units si
+atom_style      coccus
+atom_modify     map array sort 10 0
+
+boundary        pp pp ff
+newton          off
+processors      * * 1
+
+comm_modify     vel yes
+
+
+#-----------------------------Domain Setup------------------------------------#
+
+# 200um x 200um x 600um tall domain
+region simu_domain block 0.0 2e-4 0.0 2e-4 0.0 6e-4 units box
+create_box 6 simu_domain
+
+
+#--------------------Microbes and Functional Groups---------------------------#
+
+lattice sc 1e-5 origin 0 0 0
+
+# sparse central seed patch: 60um x 60um on bottom surface
+region seed_region block 7 13 7 13 0 1
+
+# 25 cells each -- sparse enough for isolated colony development
+create_atoms 1 random 25 1234 seed_region     # HET
+create_atoms 2 random 25 2345 seed_region     # AOB
+create_atoms 3 random 25 3456 seed_region     # NOB
+create_atoms 4 random 25 4567 seed_region     # ANA
+create_atoms 5 random 25 5678 seed_region     # CECT5344
+
+# all species start at 4um diameter, 32 kg/m3 density
+set type 1 diameter 4e-6
+set type 1 density 32
+set type 2 diameter 4e-6
+set type 2 density 32
+set type 3 diameter 4e-6
+set type 3 density 32
+set type 4 diameter 4e-6
+set type 4 density 32
+set type 5 diameter 4e-6
+set type 5 density 32
+set type 6 diameter 4e-6
+set type 6 density 32
+
+group           HET   type 1
+group           AOB   type 2
+group           NOB   type 3
+group           ANA   type 4
+group           CECT  type 5
+group           DEAD  type 6
+
+neighbor        2e-6 bin
+neigh_modify    check yes
+
+
+#--------------------------Mesh Grid and Substrates---------------------------#
+
+# 8 substrates
+grid_style      nufeb/chemostat 8 sub nh4 o2 no2 no3 n2 hg scn 1.25e-5
+
+# Boundary conditions and initial concentrations (kg/m3)
+grid_modify     set sub  pp pp nd  1.2e-3       # organic carbon
+grid_modify     set nh4  pp pp nd  1e-3         # ammonium
+grid_modify     set o2   pp pp nd  0.5e-3       # dissolved oxygen
+grid_modify     set no2  pp pp nd  1e-8         # nitrite (trace)
+grid_modify     set no3  pp pp nd  1e-8         # nitrate (trace)
+grid_modify     set n2   pp pp nd  1e-8         # dinitrogen (trace)
+grid_modify     set hg   pp pp nd  5e-5         # Hg2+ -- 50 ug/L
+grid_modify     set scn  pp pp nd  1.5e-3       # SCN- -- 1.5 mg/L
+
+
+#--------------------------Biological Processes--------------------------------#
+
+# HET growth: aerobic heterotrophy
+fix growth_het HET nufeb/growth/het sub 4e-3 o2 2e-4 no2 0.5e-3 no3 0.5e-3 &
+growth 6.9444e-5 yield 0.63 maintain 4.63e-6 decay 9.17e-7 anoxic 0.8
+
+# AOB growth: NH4+ -> NO2-
+fix growth_aob AOB nufeb/growth/aob nh4 2.4e-3 o2 0.6e-3 no2 &
+growth 2.3727e-5 yield 0.15 maintain 1.505e-6 decay 7.87e-7
+
+# NOB growth: NO2- -> NO3-
+fix growth_nob NOB nufeb/growth/nob o2 2.2e-3 no2 5.5e-3 no3 &
+growth 1.6782e-5 yield 0.041 maintain 0.694e-6 decay 4.63e-7
+
+# ANA growth: NH4+ + NO2- -> N2 (Hg2+ inhibited, K_I = 10 ug/L)
+fix growth_ana ANA nufeb/growth/anammox_hg nh4 7e-5 o2 1e-5 no2 5e-5 no3 n2 hg 1e-5 &
+growth 9.26e-7 yield 0.159 maintain 3.5e-8 decay 3e-8
+
+# CECT5344 growth: SCN- degrader + Hg2+ accumulator
+fix growth_cect CECT nufeb/growth/cect5344 scn 5e-3 o2 2e-4 nh4 hg 1e-2 &
+growth 2.5e-5 yield 0.5 maintain 3e-6 decay 5e-7 &
+hg_uptake 2e-3 nh4_yield 0.293
+
+# cell division at 5um diameter
+fix div all nufeb/division/coccus 5e-6 1234
+
+# cell death below 2um diameter
+fix death all nufeb/death/diameter DEAD 2e-6 type 6
+
+
+#---------------------------Physical Processes---------------------------------#
+
+pair_style  gran/hooke/history 1e-2 NULL 1e-3 NULL 0.0 0
+pair_coeff  * *
+
+fix nve all nve/limit 1e-7
+fix wall all wall/gran hooke/history 0.5 NULL 0.5 NULL 0 0 zplane 0.0 6e-04
+fix vis all viscous 1e-6
+
+
+#---------------------------Post-Physical Processes----------------------------#
+
+fix blayer all nufeb/boundary_layer 1.5e-4 1 xhi
+
+fix coeff_sub all nufeb/diffusion_coeff sub ratio 0.75
+fix coeff_o2  all nufeb/diffusion_coeff o2  ratio 0.75
+fix coeff_nh4 all nufeb/diffusion_coeff nh4 ratio 0.75
+fix coeff_no2 all nufeb/diffusion_coeff no2 ratio 0.75
+fix coeff_no3 all nufeb/diffusion_coeff no3 ratio 0.75
+fix coeff_hg  all nufeb/diffusion_coeff hg  ratio 0.50
+fix coeff_scn all nufeb/diffusion_coeff scn ratio 0.60
+
+
+#---------------------------Chemical Processes----------------------------------#
+
+fix diff_sub all nufeb/diffusion_reaction sub 1.16e-9
+fix diff_nh4 all nufeb/diffusion_reaction nh4 1.97e-9
+fix diff_o2  all nufeb/diffusion_reaction o2  2.30e-9
+fix diff_no2 all nufeb/diffusion_reaction no2 1.85e-9
+fix diff_no3 all nufeb/diffusion_reaction no3 1.85e-9
+fix diff_n2  all nufeb/diffusion_reaction n2  2.30e-9
+fix diff_hg  all nufeb/diffusion_reaction hg  9.10e-10
+fix diff_scn all nufeb/diffusion_reaction scn 1.85e-9
+
+
+#--------------------------Computations and Outputs----------------------------#
+
+variable mass equal "mass(all)"
+variable nhet equal "count(HET)"
+variable naob equal "count(AOB)"
+variable nnob equal "count(NOB)"
+variable nana equal "count(ANA)"
+variable ncect equal "count(CECT)"
+variable ndead equal "count(DEAD)"
+
+# Lightweight preview images (no SSAO -- save compute for VTK/ParaView)
+# Earth-tone palette: tan/olive/sienna/gold/teal/darkgray
+shell mkdir png
+dump du_img all image 20 png/biofilm_*.png type diameter &
+size 1280 720 view 75 50 center s 0.5 0.5 0.25 up 0 0 1 zoom 2.4 &
+shiny 0.5 box yes 0.003
+dump_modify du_img backcolor white boxcolor darkslategray &
+acolor 1 tan acolor 2 darkolivegreen acolor 3 sienna &
+acolor 4 gold acolor 5 teal acolor 6 darkgray
+
+# VTK output for ParaView publication rendering
+shell mkdir vtk
+dump du_vtk all vtk 40 vtk/dump*.vtu id type diameter
+dump du_grid all grid/vtk 40 vtk/dump_%_*.vti con rea den gro
+
+thermo_style custom step cpu atoms v_mass v_nhet v_naob v_nnob v_nana v_ncect v_ndead
+thermo 1
+thermo_modify lost warn
+
+
+#---------------------------------Run------------------------------------------#
+
+run_style nufeb diffdt 1e-4 difftol 1e-6 pairdt 1e-2 pairtol 1 pairmax 200 diffmax 1000
+
+timestep 3600                               # 1 hour biological timestep
+
+run 2160                                    # 90 days

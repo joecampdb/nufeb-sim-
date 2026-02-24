@@ -1,0 +1,163 @@
+#-----------------------------------------------------------------------------#
+#   Mercury Reef -- Early Growth Phase (high-res VTK for Blender animation)  #
+#                                                                             #
+#   Re-runs the first 600 steps (25 days) with VTK dumps every 10 steps      #
+#   to capture the colony sprouting phase at high temporal resolution.        #
+#   Identical physics/biology to the full Mercury Reef run.                   #
+#-----------------------------------------------------------------------------#
+
+units si
+atom_style      coccus
+atom_modify     map array sort 10 0
+
+boundary        pp pp ff
+newton          off
+processors      * * 1
+
+comm_modify     vel yes
+
+region simu_domain block 0.0 4e-4 0.0 4e-4 0.0 8e-4 units box
+create_box 7 simu_domain
+
+lattice sc 1e-5 origin 0 0 0
+
+# Identical seed clusters
+region seed_A block  8 12  8 12 0 1
+region seed_B block 28 32  8 12 0 1
+region seed_C block  8 12 28 32 0 1
+region seed_D block 28 32 28 32 0 1
+
+create_atoms 1 random 15 11111 seed_A
+create_atoms 2 random 8  11112 seed_A
+create_atoms 5 random 5  11113 seed_A
+
+create_atoms 1 random 8  22221 seed_B
+create_atoms 4 random 12 22222 seed_B
+create_atoms 5 random 8  22223 seed_B
+
+create_atoms 1 random 8  33331 seed_C
+create_atoms 3 random 6  33332 seed_C
+create_atoms 5 random 15 33333 seed_C
+
+create_atoms 1 random 10 44441 seed_D
+create_atoms 2 random 8  44442 seed_D
+create_atoms 3 random 8  44443 seed_D
+
+set type 1 diameter 4e-6
+set type 1 density 32
+set type 2 diameter 4e-6
+set type 2 density 32
+set type 3 diameter 4e-6
+set type 3 density 32
+set type 4 diameter 4e-6
+set type 4 density 32
+set type 5 diameter 4e-6
+set type 5 density 32
+set type 6 diameter 4e-6
+set type 6 density 32
+set type 7 diameter 4e-6
+set type 7 density 32
+
+group           HET   type 1
+group           AOB   type 2
+group           NOB   type 3
+group           ANA   type 4
+group           CECT  type 5
+group           EPS   type 6
+group           DEAD  type 7
+
+neighbor        2e-6 bin
+neigh_modify    check yes
+
+grid_style      nufeb/chemostat 8 sub nh4 o2 no2 no3 n2 hg scn 1.25e-5
+
+grid_modify     set sub  pp pp nd  1.2e-3
+grid_modify     set nh4  pp pp nd  1e-3
+grid_modify     set o2   pp pp nd  0.5e-3
+grid_modify     set no2  pp pp nd  1e-8
+grid_modify     set no3  pp pp nd  1e-8
+grid_modify     set n2   pp pp nd  1e-8
+grid_modify     set hg   pp pp nd  5e-5
+grid_modify     set scn  pp pp nd  1.5e-3
+
+fix growth_het HET nufeb/growth/het sub 4e-3 o2 2e-4 no2 0.5e-3 no3 0.5e-3 &
+growth 6.9444e-5 yield 0.63 maintain 4.63e-6 decay 9.17e-7 anoxic 0.8 &
+epsyield 0.18 epsdens 30
+
+fix growth_aob AOB nufeb/growth/aob nh4 2.4e-3 o2 0.6e-3 no2 &
+growth 2.3727e-5 yield 0.15 maintain 1.505e-6 decay 7.87e-7
+
+fix growth_nob NOB nufeb/growth/nob o2 2.2e-3 no2 5.5e-3 no3 &
+growth 1.6782e-5 yield 0.041 maintain 0.694e-6 decay 4.63e-7
+
+fix growth_ana ANA nufeb/growth/anammox_hg nh4 7e-5 o2 1e-5 no2 5e-5 no3 n2 hg 1e-5 &
+growth 9.26e-7 yield 0.159 maintain 3.5e-8 decay 3e-8
+
+fix growth_cect CECT nufeb/growth/cect5344 scn 5e-3 o2 2e-4 nh4 hg 1e-2 &
+growth 2.5e-5 yield 0.5 maintain 3e-6 decay 5e-7 &
+hg_uptake 2e-3 nh4_yield 0.293
+
+fix growth_eps EPS nufeb/growth/eps sub decay 2e-6
+
+fix eps_ext HET nufeb/eps_secretion 6 EPS 1.3 30 7890
+
+fix div_het  HET  nufeb/division/coccus 5e-6 1234 epsdens 30
+fix div_aob  AOB  nufeb/division/coccus 5e-6 2345
+fix div_nob  NOB  nufeb/division/coccus 5e-6 3456
+fix div_ana  ANA  nufeb/division/coccus 5e-6 4567
+fix div_cect CECT nufeb/division/coccus 5e-6 5678
+
+fix death all nufeb/death/diameter DEAD 2e-6 type 7
+
+pair_style  gran/hooke/history 1e-2 NULL 1e-3 NULL 0.0 0
+pair_coeff  * *
+
+fix nve all nve/limit 1e-7
+fix wall all wall/gran hooke/history 0.5 NULL 0.5 NULL 0 0 zplane 0.0 8e-04
+fix vis all viscous 1e-6
+
+fix adh all nufeb/adhesion/eps EPS 5e2
+fix walladh all nufeb/wall_adhesion EPS 1e3 zplane 0.0 NULL
+
+fix blayer all nufeb/boundary_layer 2.5e-4 1 xhi
+
+fix coeff_sub all nufeb/diffusion_coeff sub ratio 0.75
+fix coeff_o2  all nufeb/diffusion_coeff o2  ratio 0.75
+fix coeff_nh4 all nufeb/diffusion_coeff nh4 ratio 0.75
+fix coeff_no2 all nufeb/diffusion_coeff no2 ratio 0.75
+fix coeff_no3 all nufeb/diffusion_coeff no3 ratio 0.75
+fix coeff_hg  all nufeb/diffusion_coeff hg  ratio 0.50
+fix coeff_scn all nufeb/diffusion_coeff scn ratio 0.60
+
+fix diff_sub all nufeb/diffusion_reaction sub 1.16e-9
+fix diff_nh4 all nufeb/diffusion_reaction nh4 1.97e-9
+fix diff_o2  all nufeb/diffusion_reaction o2  2.30e-9
+fix diff_no2 all nufeb/diffusion_reaction no2 1.85e-9
+fix diff_no3 all nufeb/diffusion_reaction no3 1.85e-9
+fix diff_n2  all nufeb/diffusion_reaction n2  2.30e-9
+fix diff_hg  all nufeb/diffusion_reaction hg  9.10e-10
+fix diff_scn all nufeb/diffusion_reaction scn 1.85e-9
+
+variable mass equal "mass(all)"
+variable nhet equal "count(HET)"
+variable naob equal "count(AOB)"
+variable nnob equal "count(NOB)"
+variable nana equal "count(ANA)"
+variable ncect equal "count(CECT)"
+variable neps equal "count(EPS)"
+variable ndead equal "count(DEAD)"
+
+# High-frequency VTK output: every 10 steps = 60 frames over 600 steps
+shell mkdir vtk
+dump du_vtk all vtk 10 vtk/dump*.vtu id type diameter
+dump du_grid all grid/vtk 10 vtk/dump_%_*.vti con rea den gro
+
+thermo_style custom step cpu atoms v_mass v_nhet v_naob v_nnob v_nana v_ncect v_neps v_ndead
+thermo 1
+thermo_modify lost warn
+
+run_style nufeb diffdt 1e-4 difftol 1e-6 pairdt 1e-2 pairtol 1 pairmax 200 diffmax 1000
+
+timestep 3600
+
+run 600
