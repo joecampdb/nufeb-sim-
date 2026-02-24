@@ -2,7 +2,7 @@
 
 Simulating heavy metal bioremediation in a multi-species biofilm using individual-based modeling.
 
-![Day 0](examples/day_0.png) ![Day 68](examples/day_68.png) ![Day 157](examples/day_157.png)
+![Day 0](hg_remediation/examples/day_0.png) ![Day 68](hg_remediation/examples/day_68.png) ![Day 157](hg_remediation/examples/day_157.png)
 
 *Left to right: Day 0 (111 seed cells), Day 68 (merged multi-lobe reef), Day 157 (mature reef with CECT eruption zones)*
 
